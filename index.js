@@ -1,7 +1,7 @@
 import { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, PermissionFlagsBits } from 'discord.js';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
-
+import express from 'express';
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 let db;
 
@@ -174,3 +174,14 @@ client.on('interactionCreate', async (i) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+// Servidor web pra manter o bot 24/7 no Render
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+  res.send('Bot de ponto online 24/7!');
+});
+
+app.listen(PORT, () => {
+  console.log(`Servidor web fake rodando na porta ${PORT}`);
+})
