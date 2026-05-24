@@ -1,0 +1,11 @@
+{
+  "name": "bot-ponto",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "sqlite3": "^5.1.7"
+  }
+}
