@@ -1,23 +1,26 @@
 import { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, PermissionFlagsBits } from 'discord.js';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
+import { createClient } from '@libsql/client';
 import express from 'express';
+
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 let db;
 
 async function initDB() {
-  db = await open({
-    filename: './ponto.db',
-    driver: sqlite3.Database
+  db = createClient({
+    url: process.env.TURSO_DATABASE_URL,
+    authToken: process.env.TURSO_AUTH_TOKEN
   });
 
-  await db.exec(`
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS registros (
       user_id TEXT,
       guild_id TEXT,
       tipo TEXT,
       timestamp INTEGER
-    );
+    )
+  `);
+  
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS ajustes (
       user_id TEXT,
       guild_id TEXT,
@@ -25,7 +28,7 @@ async function initDB() {
       motivo TEXT,
       admin_id TEXT,
       timestamp INTEGER
-    );
+    )
   `);
 }
 
@@ -43,7 +46,10 @@ const commands = [
 
 async function calcularHoras(userId, guildId, dias = 1) {
   const inicio = Date.now() - (dias * 24 * 60 * 60 * 1000);
-  const registros = await db.all(`SELECT * FROM registros WHERE user_id =? AND guild_id =? AND timestamp >? ORDER BY timestamp ASC`, [userId, guildId, inicio]);
+  const { rows: registros } = await db.execute({
+    sql: `SELECT * FROM registros WHERE user_id =? AND guild_id =? AND timestamp >? ORDER BY timestamp ASC`,
+    args: [userId, guildId, inicio]
+  });
 
   let totalMs = 0;
   let ultimoInicio = null;
@@ -65,7 +71,11 @@ async function calcularHoras(userId, guildId, dias = 1) {
     }
   }
 
-  const ajustes = await db.get(`SELECT SUM(horas) as total FROM ajustes WHERE user_id =? AND guild_id =?`, [userId, guildId]);
+  const { rows: ajustesRows } = await db.execute({
+    sql: `SELECT SUM(horas) as total FROM ajustes WHERE user_id =? AND guild_id =?`,
+    args: [userId, guildId]
+  });
+  const ajustes = ajustesRows[0];
   totalMs += (ajustes?.total || 0) * 60 * 1000;
 
   return totalMs / (1000 * 60 * 60);
@@ -86,17 +96,26 @@ client.on('interactionCreate', async (i) => {
 
   try {
     if (commandName === 'iniciar') {
-      await db.run(`INSERT INTO registros (user_id, guild_id, tipo, timestamp) VALUES (?,?, 'iniciar',?)`, [user.id, guildId, Date.now()]);
+      await db.execute({
+        sql: `INSERT INTO registros (user_id, guild_id, tipo, timestamp) VALUES (?,?, 'iniciar',?)`,
+        args: [user.id, guildId, Date.now()]
+      });
       await i.reply({ content: `⏰ Ponto iniciado! Bom trabalho, ${user.username}`, ephemeral: true });
     }
 
     if (commandName === 'pausar') {
-      await db.run(`INSERT INTO registros (user_id, guild_id, tipo, timestamp) VALUES (?,?, 'pausar',?)`, [user.id, guildId, Date.now()]);
+      await db.execute({
+        sql: `INSERT INTO registros (user_id, guild_id, tipo, timestamp) VALUES (?,?, 'pausar',?)`,
+        args: [user.id, guildId, Date.now()]
+      });
       await i.reply({ content: `⏸️ Pausa registrada!`, ephemeral: true });
     }
 
     if (commandName === 'encerrar') {
-      await db.run(`INSERT INTO registros (user_id, guild_id, tipo, timestamp) VALUES (?,?, 'encerrar',?)`, [user.id, guildId, Date.now()]);
+      await db.execute({
+        sql: `INSERT INTO registros (user_id, guild_id, tipo, timestamp) VALUES (?,?, 'encerrar',?)`,
+        args: [user.id, guildId, Date.now()]
+      });
       const horasHoje = await calcularHoras(user.id, guildId, 1);
       await i.reply({ content: `✅ Ponto encerrado! Você trabalhou ${horasHoje.toFixed(2)}h hoje.`, ephemeral: true });
     }
@@ -108,7 +127,10 @@ client.on('interactionCreate', async (i) => {
     }
 
     if (commandName === 'ranking') {
-      const usuarios = await db.all(`SELECT DISTINCT user_id FROM registros WHERE guild_id =?`, [guildId]);
+      const { rows: usuarios } = await db.execute({
+        sql: `SELECT DISTINCT user_id FROM registros WHERE guild_id =?`,
+        args: [guildId]
+      });
       let rank = [];
       for (const u of usuarios) {
         const horas = await calcularHoras(u.user_id, guildId, 7);
@@ -134,7 +156,10 @@ client.on('interactionCreate', async (i) => {
 
     if (commandName === 'inativos') {
       const tresDiasAtras = Date.now() - (3 * 24 * 60 * 60 * 1000);
-      const ativos = await db.all(`SELECT DISTINCT user_id FROM registros WHERE guild_id =? AND timestamp >?`, [guildId, tresDiasAtras]);
+      const { rows: ativos } = await db.execute({
+        sql: `SELECT DISTINCT user_id FROM registros WHERE guild_id =? AND timestamp >?`,
+        args: [guildId, tresDiasAtras]
+      });
       const idsAtivos = ativos.map(a => a.user_id);
       const membros = await i.guild.members.fetch();
       const inativos = membros.filter(m =>!m.user.bot &&!idsAtivos.includes(m.id));
@@ -144,42 +169,49 @@ client.on('interactionCreate', async (i) => {
       await i.reply({ content: texto || 'Todo mundo bateu ponto!', ephemeral: true });
     }
 
-   if (commandName === 'exportar') {
-  const formato = i.options.getString('formato');
-  const dados = await db.all(`SELECT * FROM registros WHERE guild_id =? ORDER BY timestamp DESC`, [guildId]);
-  
-  await i.deferReply({ ephemeral: true });
+    if (commandName === 'exportar') {
+      const formato = i.options.getString('formato');
+      const { rows: dados } = await db.execute({
+        sql: `SELECT * FROM registros WHERE guild_id =? ORDER BY timestamp DESC`,
+        args: [guildId]
+      });
+      
+      await i.deferReply({ ephemeral: true });
 
-  if (formato === 'csv') {
-    let csv = 'Usuario,Tipo,Data\n';
-    for (const d of dados) {
-      try {
-        const user = await client.users.fetch(d.user_id);
-        csv += `${user.username},${d.tipo},${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
-      } catch {
-        csv += `${d.user_id},${d.tipo},${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
+      if (formato === 'csv') {
+        let csv = 'Usuario,Tipo,Data\n';
+        for (const d of dados) {
+          try {
+            const user = await client.users.fetch(d.user_id);
+            csv += `${user.username},${d.tipo},${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
+          } catch {
+            csv += `${d.user_id},${d.tipo},${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
+          }
+        }
+        await i.editReply({ content: '📁 **Relatório CSV**', files: [{ attachment: Buffer.from(csv), name: 'relatorio.csv' }] });
+      } else {
+        let txt = 'RELATÓRIO DE PONTO\n\n';
+        for (const d of dados) {
+          try {
+            const user = await client.users.fetch(d.user_id);
+            txt += `${user.username} — ${d.tipo} — ${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
+          } catch {
+            txt += `${d.user_id} — ${d.tipo} — ${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
+          }
+        }
+        await i.editReply({ content: '📁 **Relatório TXT**', files: [{ attachment: Buffer.from(txt), name: 'relatorio.txt' }] });
       }
     }
-    await i.editReply({ content: '📁 **Relatório CSV**', files: [{ attachment: Buffer.from(csv), name: 'relatorio.csv' }] });
-  } else {
-    let txt = 'RELATÓRIO DE PONTO\n\n';
-    for (const d of dados) {
-      try {
-        const user = await client.users.fetch(d.user_id);
-        txt += `${user.username} — ${d.tipo} — ${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
-      } catch {
-        txt += `${d.user_id} — ${d.tipo} — ${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
-      }
-    }
-    await i.editReply({ content: '📁 **Relatório TXT**', files: [{ attachment: Buffer.from(txt), name: 'relatorio.txt' }] });
-  }
-}
+
     if (commandName === 'ajustar') {
       const usuario = i.options.getUser('usuario');
       const minutos = i.options.getInteger('minutos');
       const motivo = i.options.getString('motivo');
 
-      await db.run(`INSERT INTO ajustes (user_id, guild_id, horas, motivo, admin_id, timestamp) VALUES (?,?,?,?,?,?)`, [usuario.id, guildId, minutos, motivo, user.id, Date.now()]);
+      await db.execute({
+        sql: `INSERT INTO ajustes (user_id, guild_id, horas, motivo, admin_id, timestamp) VALUES (?,?,?,?,?,?)`,
+        args: [usuario.id, guildId, minutos, motivo, user.id, Date.now()]
+      });
       await i.reply({ content: `🛠️ Ajustado ${minutos} minutos para ${usuario.username}\nMotivo: ${motivo}\nLog salvo.`, ephemeral: true });
     }
   } catch (err) {
@@ -189,7 +221,7 @@ client.on('interactionCreate', async (i) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
-// Servidor web pra manter o bot 24/7 no Render
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -199,4 +231,4 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Servidor web fake rodando na porta ${PORT}`);
-})
+});
