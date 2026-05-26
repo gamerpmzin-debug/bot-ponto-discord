@@ -107,15 +107,35 @@ client.on('interactionCreate', async interaction => {
 
   const userId = interaction.user.id;
 
-  if (interaction.commandName === 'iniciar') {
-    const now = Date.now();
-    await db.execute({
-      sql: `INSERT INTO pontos (user_id, horas, minutos, inicio_timestamp) VALUES (?, 0, 0,?)
-            ON CONFLICT(user_id) DO UPDATE SET inicio_timestamp =?`,
-      args: [userId, now, now]
+ if (interaction.commandName === 'iniciar') {
+  await interaction.deferReply({ ephemeral: true });
+
+  try {
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+
+    const check = await db.execute({
+      sql: 'SELECT * FROM sessoes WHERE user_id =? AND fim IS NULL',
+      args: [userId]
     });
-    await interaction.reply('Contador iniciado! Use /pausar ou /encerrar depois.');
+
+    if (check.rows.length > 0) {
+      return interaction.editReply('❌ Tu já tem uma sessão ativa. Usa `/parar` antes.');
+    }
+
+    const agora = new Date().toISOString();
+    await db.execute({
+      sql: 'INSERT INTO sessoes (user_id, guild_id, inicio) VALUES (?,?,?)',
+      args: [userId, guildId, agora]
+    });
+
+    await interaction.editReply('✅ Sessão iniciada! Bom trabalho.');
+
+  } catch (error) {
+    console.error('Erro no /iniciar:', error);
+    await interaction.editReply('❌ Deu erro ao iniciar. Tenta de novo.');
   }
+}
 
   if (interaction.commandName === 'pausar') {
     await interaction.reply('Pausa registrada! Use /iniciar pra continuar.');
