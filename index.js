@@ -1,234 +1,96 @@
-import { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, PermissionFlagsBits } from 'discord.js';
+import { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } from 'discord.js';
 import { createClient } from '@libsql/client';
 import express from 'express';
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-let db;
+// Servidor fake pro Render não dormir
+const app = express();
+const PORT = process.env.PORT || 10000;
+app.get('/', (req, res) => res.send('Bot online!'));
+app.listen(PORT, () => console.log(`Servidor web fake rodando na porta ${PORT}`));
 
-async function initDB() {
-  db = createClient({
-    url: process.env.TURSO_DATABASE_URL,
-    authToken: process.env.TURSO_AUTH_TOKEN
-  });
-
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS registros (
-      user_id TEXT,
-      guild_id TEXT,
-      tipo TEXT,
-      timestamp INTEGER
-    )
-  `);
-  
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS ajustes (
-      user_id TEXT,
-      guild_id TEXT,
-      horas INTEGER,
-      motivo TEXT,
-      admin_id TEXT,
-      timestamp INTEGER
-    )
-  `);
-}
-
-const commands = [
-  new SlashCommandBuilder().setName('iniciar').setDescription('Registra entrada'),
-  new SlashCommandBuilder().setName('pausar').setDescription('Registra pausa'),
-  new SlashCommandBuilder().setName('encerrar').setDescription('Registra saída e conta horas'),
-  new SlashCommandBuilder().setName('horas').setDescription('Mostra suas horas hoje/semana'),
-  new SlashCommandBuilder().setName('ranking').setDescription('Ranking semanal Top 10'),
-  new SlashCommandBuilder().setName('bancohoras').setDescription('Mostra seu banco de horas'),
-  new SlashCommandBuilder().setName('inativos').setDescription('Lista quem não bate ponto há 3 dias').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-  new SlashCommandBuilder().setName('exportar').setDescription('Exporta planilha').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(opt => opt.setName('formato').setDescription('csv ou txt').setRequired(true).addChoices({name: 'CSV', value: 'csv'}, {name: 'TXT', value: 'txt'})),
-  new SlashCommandBuilder().setName('ajustar').setDescription('Adiciona/remove horas').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(opt => opt.setName('usuario').setDescription('Membro').setRequired(true)).addIntegerOption(opt => opt.setName('minutos').setDescription('Minutos pra add/remover. Negativo = remove').setRequired(true)).addStringOption(opt => opt.setName('motivo').setDescription('Motivo do ajuste').setRequired(true))
-].map(cmd => cmd.toJSON());
-
-async function calcularHoras(userId, guildId, dias = 1) {
-  const inicio = Date.now() - (dias * 24 * 60 * 60 * 1000);
-  const { rows: registros } = await db.execute({
-    sql: `SELECT * FROM registros WHERE user_id =? AND guild_id =? AND timestamp >? ORDER BY timestamp ASC`,
-    args: [userId, guildId, inicio]
-  });
-
-  let totalMs = 0;
-  let ultimoInicio = null;
-  let pausado = false;
-
-  for (const r of registros) {
-    if (r.tipo === 'iniciar') {
-      if (pausado) pausado = false;
-      ultimoInicio = r.timestamp;
-    }
-    if (r.tipo === 'pausar' && ultimoInicio &&!pausado) {
-      pausado = true;
-      totalMs += r.timestamp - ultimoInicio;
-      ultimoInicio = null;
-    }
-    if (r.tipo === 'encerrar' && ultimoInicio &&!pausado) {
-      totalMs += r.timestamp - ultimoInicio;
-      ultimoInicio = null;
-    }
-  }
-
-  const { rows: ajustesRows } = await db.execute({
-    sql: `SELECT SUM(horas) as total FROM ajustes WHERE user_id =? AND guild_id =?`,
-    args: [userId, guildId]
-  });
-  const ajustes = ajustesRows[0];
-  totalMs += (ajustes?.total || 0) * 60 * 1000;
-
-  return totalMs / (1000 * 60 * 60);
-}
-
-client.once('ready', async () => {
-  await initDB();
-  console.log(`Bot online: ${client.user.tag}`);
-
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-  await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-  console.log('Comandos registrados!');
+// Conexão com Turso - SEM syncUrl
+const db = createClient({
+  url: process.env.TURSO_DATABASE_URL,
+  authToken: process.env.TURSO_AUTH_TOKEN,
 });
 
-client.on('interactionCreate', async (i) => {
-  if (!i.isChatInputCommand()) return;
-  const { commandName, user, guildId } = i;
+// Criar tabela se não existir
+await db.execute(`
+  CREATE TABLE IF NOT EXISTS pontos (
+    user_id TEXT PRIMARY KEY,
+    horas INTEGER DEFAULT 0,
+    minutos INTEGER DEFAULT 0
+  )
+`);
 
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+// Comandos
+const commands = [
+  new SlashCommandBuilder()
+   .setName('iniciar')
+   .setDescription('Inicia seu contador de horas'),
+
+  new SlashCommandBuilder()
+   .setName('horas')
+   .setDescription('Mostra suas horas acumuladas'),
+
+  new SlashCommandBuilder()
+   .setName('resetar')
+   .setDescription('Reseta suas horas pra zero')
+].map(command => command.toJSON());
+
+// Registrar comandos
+const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+client.once('ready', async () => {
   try {
-    if (commandName === 'iniciar') {
-      await db.execute({
-        sql: `INSERT INTO registros (user_id, guild_id, tipo, timestamp) VALUES (?,?, 'iniciar',?)`,
-        args: [user.id, guildId, Date.now()]
-      });
-      await i.reply({ content: `⏰ Ponto iniciado! Bom trabalho, ${user.username}`, ephemeral: true });
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands },
+    );
+    console.log(`Bot online: ${client.user.tag}`);
+    console.log('Comandos registrados!');
+  } catch (error) {
+    console.error(error);
+  }
+});
+
+// Lógica dos comandos
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const userId = interaction.user.id;
+
+  if (interaction.commandName === 'iniciar') {
+    await db.execute({
+      sql: 'INSERT OR IGNORE INTO pontos (user_id, horas, minutos) VALUES (?, 0, 0)',
+      args: [userId]
+    });
+    await interaction.reply('Contador iniciado! Use /horas pra ver seu tempo.');
+  }
+
+  if (interaction.commandName === 'horas') {
+    const result = await db.execute({
+      sql: 'SELECT horas, minutos FROM pontos WHERE user_id =?',
+      args: [userId]
+    });
+
+    if (result.rows.length === 0) {
+      return interaction.reply('Você ainda não iniciou. Use /iniciar primeiro.');
     }
 
-    if (commandName === 'pausar') {
-      await db.execute({
-        sql: `INSERT INTO registros (user_id, guild_id, tipo, timestamp) VALUES (?,?, 'pausar',?)`,
-        args: [user.id, guildId, Date.now()]
-      });
-      await i.reply({ content: `⏸️ Pausa registrada!`, ephemeral: true });
-    }
+    const { horas, minutos } = result.rows[0];
+    await interaction.reply(`Você tem ${horas}h e ${minutos}min acumulados.`);
+  }
 
-    if (commandName === 'encerrar') {
-      await db.execute({
-        sql: `INSERT INTO registros (user_id, guild_id, tipo, timestamp) VALUES (?,?, 'encerrar',?)`,
-        args: [user.id, guildId, Date.now()]
-      });
-      const horasHoje = await calcularHoras(user.id, guildId, 1);
-      await i.reply({ content: `✅ Ponto encerrado! Você trabalhou ${horasHoje.toFixed(2)}h hoje.`, ephemeral: true });
-    }
-
-    if (commandName === 'horas') {
-      const horasHoje = await calcularHoras(user.id, guildId, 1);
-      const horasSemana = await calcularHoras(user.id, guildId, 7);
-      await i.reply({ content: `📊 **Suas horas**\nHoje: ${horasHoje.toFixed(2)}h\nSemana: ${horasSemana.toFixed(2)}h`, ephemeral: true });
-    }
-
-    if (commandName === 'ranking') {
-      const { rows: usuarios } = await db.execute({
-        sql: `SELECT DISTINCT user_id FROM registros WHERE guild_id =?`,
-        args: [guildId]
-      });
-      let rank = [];
-      for (const u of usuarios) {
-        const horas = await calcularHoras(u.user_id, guildId, 7);
-        if (horas > 0.01) rank.push({ id: u.user_id, horas });
-      }
-      rank.sort((a, b) => b.horas - a.horas);
-      rank = rank.slice(0, 10);
-
-      let texto = `🏆 **Ranking Semanal**\n`;
-      const medalhas = ['🥇', '🥈', '🥉'];
-      for (let j = 0; j < rank.length; j++) {
-        const medal = medalhas[j] || `${j + 1}.`;
-        texto += `${medal} <@${rank[j].id}> — ${rank[j].horas.toFixed(2)}h\n`;
-      }
-      await i.reply({ content: texto || 'Ninguém bateu ponto essa semana.' });
-    }
-
-    if (commandName === 'bancohoras') {
-      const horasSemana = await calcularHoras(user.id, guildId, 7);
-      const saldo = horasSemana - 40;
-      await i.reply({ content: `🏦 **Banco de Horas**\nSaldo: ${saldo.toFixed(2)}h\n${saldo > 0? 'Você tem horas pra folga!' : 'Sem horas extras ainda.'}`, ephemeral: true });
-    }
-
-    if (commandName === 'inativos') {
-      const tresDiasAtras = Date.now() - (3 * 24 * 60 * 60 * 1000);
-      const { rows: ativos } = await db.execute({
-        sql: `SELECT DISTINCT user_id FROM registros WHERE guild_id =? AND timestamp >?`,
-        args: [guildId, tresDiasAtras]
-      });
-      const idsAtivos = ativos.map(a => a.user_id);
-      const membros = await i.guild.members.fetch();
-      const inativos = membros.filter(m =>!m.user.bot &&!idsAtivos.includes(m.id));
-
-      let texto = `🚫 **Inativos há 3+ dias:**\n`;
-      inativos.forEach(m => texto += `- ${m.user.username}\n`);
-      await i.reply({ content: texto || 'Todo mundo bateu ponto!', ephemeral: true });
-    }
-
-    if (commandName === 'exportar') {
-      const formato = i.options.getString('formato');
-      const { rows: dados } = await db.execute({
-        sql: `SELECT * FROM registros WHERE guild_id =? ORDER BY timestamp DESC`,
-        args: [guildId]
-      });
-      
-      await i.deferReply({ ephemeral: true });
-
-      if (formato === 'csv') {
-        let csv = 'Usuario,Tipo,Data\n';
-        for (const d of dados) {
-          try {
-            const user = await client.users.fetch(d.user_id);
-            csv += `${user.username},${d.tipo},${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
-          } catch {
-            csv += `${d.user_id},${d.tipo},${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
-          }
-        }
-        await i.editReply({ content: '📁 **Relatório CSV**', files: [{ attachment: Buffer.from(csv), name: 'relatorio.csv' }] });
-      } else {
-        let txt = 'RELATÓRIO DE PONTO\n\n';
-        for (const d of dados) {
-          try {
-            const user = await client.users.fetch(d.user_id);
-            txt += `${user.username} — ${d.tipo} — ${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
-          } catch {
-            txt += `${d.user_id} — ${d.tipo} — ${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
-          }
-        }
-        await i.editReply({ content: '📁 **Relatório TXT**', files: [{ attachment: Buffer.from(txt), name: 'relatorio.txt' }] });
-      }
-    }
-
-    if (commandName === 'ajustar') {
-      const usuario = i.options.getUser('usuario');
-      const minutos = i.options.getInteger('minutos');
-      const motivo = i.options.getString('motivo');
-
-      await db.execute({
-        sql: `INSERT INTO ajustes (user_id, guild_id, horas, motivo, admin_id, timestamp) VALUES (?,?,?,?,?,?)`,
-        args: [usuario.id, guildId, minutos, motivo, user.id, Date.now()]
-      });
-      await i.reply({ content: `🛠️ Ajustado ${minutos} minutos para ${usuario.username}\nMotivo: ${motivo}\nLog salvo.`, ephemeral: true });
-    }
-  } catch (err) {
-    console.error(err);
-    if (!i.replied) await i.reply({ content: '❌ Deu erro aqui. Tenta de novo.', ephemeral: true });
+  if (interaction.commandName === 'resetar') {
+    await db.execute({
+      sql: 'UPDATE pontos SET horas = 0, minutos = 0 WHERE user_id =?',
+      args: [userId]
+    });
+    await interaction.reply('Suas horas foram resetadas pra zero.');
   }
 });
 
 client.login(process.env.DISCORD_TOKEN);
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.get('/', (req, res) => {
-  res.send('Bot de ponto online 24/7!');
-});
-
-app.listen(PORT, () => {
-  console.log(`Servidor web fake rodando na porta ${PORT}`);
-});
