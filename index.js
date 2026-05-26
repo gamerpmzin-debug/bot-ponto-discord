@@ -144,21 +144,36 @@ client.on('interactionCreate', async (i) => {
       await i.reply({ content: texto || 'Todo mundo bateu ponto!', ephemeral: true });
     }
 
-    if (commandName === 'exportar') {
-      const formato = i.options.getString('formato');
-      const dados = await db.all(`SELECT * FROM registros WHERE guild_id =? ORDER BY timestamp DESC`, [guildId]);
+   if (commandName === 'exportar') {
+  const formato = i.options.getString('formato');
+  const dados = await db.all(`SELECT * FROM registros WHERE guild_id =? ORDER BY timestamp DESC`, [guildId]);
+  
+  await i.deferReply({ ephemeral: true });
 
-      if (formato === 'csv') {
-        let csv = 'Usuario,Tipo,Data\n';
-        dados.forEach(d => csv += `${d.user_id},${d.tipo},${new Date(d.timestamp).toLocaleString('pt-BR')}\n`);
-        await i.reply({ content: '📁 **Relatório CSV**', files: [{ attachment: Buffer.from(csv), name: 'relatorio.csv' }], ephemeral: true });
-      } else {
-        let txt = 'RELATÓRIO DE PONTO\n\n';
-        dados.forEach(d => txt += `${d.user_id} — ${d.tipo} — ${new Date(d.timestamp).toLocaleString('pt-BR')}\n`);
-        await i.reply({ content: '📁 **Relatório TXT**', files: [{ attachment: Buffer.from(txt), name: 'relatorio.txt' }], ephemeral: true });
+  if (formato === 'csv') {
+    let csv = 'Usuario,Tipo,Data\n';
+    for (const d of dados) {
+      try {
+        const user = await client.users.fetch(d.user_id);
+        csv += `${user.username},${d.tipo},${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
+      } catch {
+        csv += `${d.user_id},${d.tipo},${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
       }
     }
-
+    await i.editReply({ content: '📁 **Relatório CSV**', files: [{ attachment: Buffer.from(csv), name: 'relatorio.csv' }] });
+  } else {
+    let txt = 'RELATÓRIO DE PONTO\n\n';
+    for (const d of dados) {
+      try {
+        const user = await client.users.fetch(d.user_id);
+        txt += `${user.username} — ${d.tipo} — ${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
+      } catch {
+        txt += `${d.user_id} — ${d.tipo} — ${new Date(d.timestamp).toLocaleString('pt-BR')}\n`;
+      }
+    }
+    await i.editReply({ content: '📁 **Relatório TXT**', files: [{ attachment: Buffer.from(txt), name: 'relatorio.txt' }] });
+  }
+}
     if (commandName === 'ajustar') {
       const usuario = i.options.getUser('usuario');
       const minutos = i.options.getInteger('minutos');
