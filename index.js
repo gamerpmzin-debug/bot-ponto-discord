@@ -5,7 +5,13 @@ import http from 'http';
 import nodemailer from 'nodemailer';
 dotenv.config();
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages
+  ]
+});
 
 const db = createClient({
   url: process.env.TURSO_DATABASE_URL,
@@ -39,10 +45,19 @@ const commands = [
 
   new SlashCommandBuilder()
 .setName('ajustar')
-.setDescription('Ajusta dados de um usuário')
+.setDescription('Soma ou subtrai horas de um usuário')
 .addUserOption(option => option.setName('usuario').setDescription('Usuário').setRequired(true))
-.addStringOption(option => option.setName('campo').setDescription('Campo: horas, pendente, status, valor').setRequired(true))
-.addStringOption(option => option.setName('valor').setDescription('Novo valor').setRequired(true)),
+.addStringOption(option =>
+  option.setName('tipo')
+   .setDescription('Somar ou subtrair horas')
+   .setRequired(true)
+   .addChoices(
+      { name: 'Somar', value: 'somar' },
+      { name: 'Subtrair', value: 'subtrair' }
+    )
+)
+.addIntegerOption(option => option.setName('horas').setDescription('Quantidade de horas').setRequired(true))
+.addIntegerOption(option => option.setName('minutos').setDescription('Quantidade de minutos').setRequired(true)),
 
   new SlashCommandBuilder()
 .setName('criarcontrato')
@@ -208,20 +223,40 @@ client.on('interactionCreate', async interaction => {
 
     if (interaction.commandName === 'ajustar') {
       const user = interaction.options.getUser('usuario');
-      const campo = interaction.options.getString('campo');
-      const valor = interaction.options.getString('valor');
+      const tipo = interaction.options.getString('tipo');
+      const horas = interaction.options.getInteger('horas');
+      const minutos = interaction.options.getInteger('minutos');
 
-      const camposValidos = ['horas', 'pendente', 'status', 'valor', 'email'];
-      if (!camposValidos.includes(campo)) {
-        return interaction.reply({ content: `Campo inválido. Use: ${camposValidos.join(', ')}`, ephemeral: true });
-      }
+      const horasParaAjustar = horas + (minutos / 60);
 
-      await db.execute({
-        sql: `UPDATE contratos SET ${campo} =? WHERE user_id =?`,
-        args: [valor, user.id]
+      const contrato = await db.execute({
+        sql: `SELECT horas FROM contratos WHERE user_id =?`,
+        args: [user.id]
       });
 
-      await interaction.reply(`Campo \`${campo}\` de ${user} ajustado pra \`${valor}\``);
+      if (contrato.rows.length === 0) {
+        return interaction.reply({ content: `${user} não tem contrato criado ainda.`, ephemeral: true });
+      }
+
+      const horasAtuais = contrato.rows[0]?.horas || 0;
+      let horasFinais = tipo === 'somar'
+       ? horasAtuais + horasParaAjustar
+        : horasAtuais - horasParaAjustar;
+
+      if (horasFinais < 0) horasFinais = 0;
+      horasFinais = parseFloat(horasFinais.toFixed(2));
+
+      await db.execute({
+        sql: `UPDATE contratos SET horas =? WHERE user_id =?`,
+        args: [horasFinais, user.id]
+      });
+
+      const emoji = tipo === 'somar'? '➕' : '➖';
+      await interaction.reply(
+        `${emoji} ${tipo === 'somar'? 'Adicionei' : 'Removi'} **${horas}h ${minutos}min** de ${user}.\n` +
+        `Horas antes: \`${horasAtuais}h\`\n` +
+        `Horas agora: \`${horasFinais}h\``
+      );
     }
 
     if (interaction.commandName === 'criarcontrato') {
@@ -243,7 +278,6 @@ client.on('interactionCreate', async interaction => {
 
       let msgFinal = `Contrato criado pra ${user}`;
 
-      // Manda por EMAIL
       try {
         await transporter.sendMail({
           from: process.env.EMAIL_USER,
@@ -257,7 +291,6 @@ client.on('interactionCreate', async interaction => {
         msgFinal += `. Deu erro ao enviar email`;
       }
 
-      // Manda na DM do Discord
       try {
         await user.send({
           content: `**📄 Teu contrato chegou:**\n\n${textoFinal}\n\n✅ Para assinar, usa \`/assinar\` aqui no servidor.`
@@ -286,7 +319,6 @@ client.on('interactionCreate', async interaction => {
 
       let msgFinal = `Contrato reenviado`;
 
-      // Email
       try {
         await transporter.sendMail({
           from: process.env.EMAIL_USER,
@@ -300,7 +332,6 @@ client.on('interactionCreate', async interaction => {
         msgFinal += `. Erro no email`;
       }
 
-      // DM
       try {
         await user.send({
           content: `**📄 Teu contrato chegou:**\n\n${textoFinal}\n\n✅ Para assinar, usa \`/assinar\` aqui no servidor.`
