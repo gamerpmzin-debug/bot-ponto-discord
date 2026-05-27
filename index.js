@@ -50,7 +50,7 @@ client.once('ready', async () => {
 client.on('interactionCreate', async i => {
   if (!i.isChatInputCommand()) return;
   const uid = i.user.id;
-  await i.deferReply({ ephemeral: i.commandName !== 'ranking' && i.commandName !== 'meuponto' && i.commandName !== 'horas' });
+  await i.deferReply({ ephemeral: i.commandName !== 'ranking' });
 
   try {
     if (i.commandName === 'iniciar') {
@@ -82,14 +82,14 @@ client.on('interactionCreate', async i => {
 
     if (i.commandName === 'meuponto' || i.commandName === 'horas') {
       const r = await db.execute({ sql: 'SELECT horas, minutos FROM pontos WHERE user_id =?', args: [uid] });
-      if (!r.rows.length) return i.reply('Você ainda não tem horas. Use /iniciar primeiro.');
+      if (!r.rows.length) return i.editReply('Você ainda não tem horas. Use /iniciar primeiro.');
       const { horas, minutos } = r.rows[0];
-      return i.reply(`Você tem **${horas}h e ${minutos}min** acumulados.`);
+      return i.editReply(`Você tem **${horas}h e ${minutos}min** acumulados.`);
     }
 
     if (i.commandName === 'ranking') {
       const r = await db.execute('SELECT user_id, horas, minutos FROM pontos ORDER BY horas DESC, minutos DESC LIMIT 10');
-      if (!r.rows.length) return i.reply('Ninguém pontuou ainda.');
+      if (!r.rows.length) return i.editReply('Ninguém pontuou ainda.');
       let msg = '**Ranking de Horas:**\n';
       for (let j = 0; j < r.rows.length; j++) {
         const row = r.rows[j];
@@ -98,7 +98,7 @@ client.on('interactionCreate', async i => {
           msg += `${j + 1}. ${member.displayName} - ${row.horas}h ${row.minutos}min\n`;
         } catch { msg += `${j + 1}. Usuário saiu - ${row.horas}h ${row.minutos}min\n`; }
       }
-      return i.reply(msg);
+      return i.editReply(msg);
     }
 
     if (i.commandName === 'exportar') {
@@ -142,6 +142,8 @@ client.on('interactionCreate', async i => {
         args: [contratoId, alvo.id, email, new Date().toISOString()] 
       });
 
+      await i.editReply(`✅ Contrato #${contratoId} criado pra ${alvo}. Tentando enviar email...`);
+
       const htmlContrato = `
         <div style="font-family: Arial; max-width: 600px; padding: 20px; border: 1px solid #ccc;">
           <h1 style="text-align: center;">CONTRATO DE PRESTAÇÃO DE SERVIÇO</h1>
@@ -155,20 +157,20 @@ client.on('interactionCreate', async i => {
           <p>3. Este contrato tem validade de 30 dias.</p>
           <br>
           <p><strong>Para confirmar a assinatura, entre no servidor e use o comando /assinar</strong></p>
-          <br>
-          <p>_________________________</p>
-          <p>Assinatura do Contratado</p>
         </div>
       `;
 
-      await transporter.sendMail({
+      transporter.sendMail({
         from: process.env.EMAIL_USER,
         to: email,
         subject: `Contrato #${contratoId} - Assinatura Pendente`,
         html: htmlContrato
+      }).catch((err) => {
+        console.error(`Falha no email: ${err.message}`);
+        i.followUp({ content: `⚠️ Email falhou: ${err.message}. Render bloqueia Gmail no plano grátis.`, ephemeral: true });
       });
       
-      return i.editReply(`✅ Contrato #${contratoId} enviado pra ${alvo}. Ele precisa usar /assinar.`);
+      return;
     }
 
     if (i.commandName === 'assinar') {
@@ -185,8 +187,12 @@ client.on('interactionCreate', async i => {
         args: [new Date().toISOString(), c.id] 
       });
 
-      const dono = await client.users.fetch(ID_DONO);
-      await dono.send(`📄 **CONTRATO ASSINADO**\n\nID: ${c.id}\nUsuário: ${i.user.tag}\nEmail: ${c.email}\nData: ${new Date().toLocaleString('pt-BR')}`);
+      try {
+        const dono = await client.users.fetch(ID_DONO);
+        await dono.send(`📄 **CONTRATO ASSINADO**\n\nID: ${c.id}\nUsuário: ${i.user.tag}\nEmail: ${c.email}\nData: ${new Date().toLocaleString('pt-BR')}`);
+      } catch (e) {
+        console.log('Não consegui mandar DM pro dono');
+      }
       
       return i.editReply(`✅ Contrato #${c.id} assinado com sucesso em ${new Date().toLocaleString('pt-BR')}!`);
     }
@@ -212,7 +218,9 @@ client.on('interactionCreate', async i => {
 
   } catch (e) {
     console.error(e);
-    return i.editReply('❌ Deu erro. Tenta de novo.');
+    if (i.deferred || i.replied) {
+      return i.editReply('❌ Deu erro. Tenta de novo.');
+    }
   }
 });
 
