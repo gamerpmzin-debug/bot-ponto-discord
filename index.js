@@ -24,27 +24,47 @@ const commands = [
   new SlashCommandBuilder().setName('exportar').setDescription('Exporta horas de todos'),
   new SlashCommandBuilder().setName('resetar').setDescription('Reseta suas horas'),
   new SlashCommandBuilder().setName('ajustar').setDescription('Ajusta horas de um membro')
-  .addUserOption(o => o.setName('usuario').setDescription('Usuário').setRequired(true))
-  .addIntegerOption(o => o.setName('horas').setDescription('Horas').setRequired(true))
-  .addIntegerOption(o => o.setName('minutos').setDescription('Minutos').setRequired(true)),
+.addUserOption(o => o.setName('usuario').setDescription('Usuário').setRequired(true))
+.addIntegerOption(o => o.setName('horas').setDescription('Horas').setRequired(true))
+.addIntegerOption(o => o.setName('minutos').setDescription('Minutos').setRequired(true)),
   new SlashCommandBuilder().setName('criarcontrato').setDescription('Cria contrato pra um usuário').setDefaultMemberPermissions(0)
-  .addUserOption(o => o.setName('usuario').setDescription('Quem vai assinar').setRequired(true))
-  .addStringOption(o => o.setName('email').setDescription('Email do contrato').setRequired(true)),
+.addUserOption(o => o.setName('usuario').setDescription('Quem vai assinar').setRequired(true))
+.addStringOption(o => o.setName('email').setDescription('Email do contrato').setRequired(true))
+.addStringOption(o => o.setName('texto').setDescription('Texto custom do contrato. Deixe vazio pra usar o padrão').setRequired(false)),
   new SlashCommandBuilder().setName('assinar').setDescription('Assina seu contrato pendente'),
   new SlashCommandBuilder().setName('enviarcontrato').setDescription('Reenvia contrato por DM').setDefaultMemberPermissions(0)
-  .addIntegerOption(o => o.setName('id').setDescription('ID do contrato').setRequired(true)),
+.addIntegerOption(o => o.setName('id').setDescription('ID do contrato').setRequired(true))
+.addStringOption(o => o.setName('texto').setDescription('Sobrescreve o texto na hora de enviar').setRequired(false)),
   new SlashCommandBuilder().setName('relatoriocontratos').setDescription('Ver todos contratos assinados').setDefaultMemberPermissions(0),
   new SlashCommandBuilder().setName('editarcontrato').setDescription('Edita email de um contrato').setDefaultMemberPermissions(0)
-  .addIntegerOption(o => o.setName('id').setDescription('ID do contrato').setRequired(true))
-  .addStringOption(o => o.setName('email').setDescription('Novo email').setRequired(true)),
+.addIntegerOption(o => o.setName('id').setDescription('ID do contrato').setRequired(true))
+.addStringOption(o => o.setName('email').setDescription('Novo email').setRequired(true)),
   new SlashCommandBuilder().setName('deletarcontrato').setDescription('Deleta um contrato').setDefaultMemberPermissions(0)
-  .addIntegerOption(o => o.setName('id').setDescription('ID do contrato').setRequired(true))
+.addIntegerOption(o => o.setName('id').setDescription('ID do contrato').setRequired(true)),
+  new SlashCommandBuilder().setName('editartextocontrato').setDescription('Edita o modelo padrão do contrato').setDefaultMemberPermissions(0)
+.addStringOption(o => o.setName('texto').setDescription('Novo texto. Use {usuario}, {id}, {email}, {data}').setRequired(true)),
+  new SlashCommandBuilder().setName('vertextocontrato').setDescription('Mostra o modelo padrão do contrato').setDefaultMemberPermissions(0)
 ].map(c => c.toJSON());
+
+async function getTextoContrato() {
+  const r = await db.execute({ sql: 'SELECT valor FROM config WHERE chave="modelo_contrato"' });
+  if (r.rows.length) return r.rows[0].valor;
+  return `📄 **CONTRATO DE PRESTAÇÃO DE SERVIÇO**\n\n**Contratado:** {usuario}\n**ID Discord:** {id}\n**Email:** {email}\n**Data:** {data}\n\n1. O contratado se compromete a cumprir as atividades designadas pela liderança.\n2. O pagamento será realizado mediante cumprimento de metas.\n3. Este contrato tem validade de 30 dias.\n\n**Para confirmar a assinatura, entre no servidor e use o comando /assinar**`;
+}
+
+function aplicarVariaveis(texto, usuario, id, email, data) {
+  return texto
+.replace(/{usuario}/g, usuario)
+.replace(/{id}/g, id)
+.replace(/{email}/g, email)
+.replace(/{data}/g, data);
+}
 
 client.once('clientReady', async () => {
   await db.execute(`CREATE TABLE IF NOT EXISTS pontos (user_id TEXT PRIMARY KEY, horas INTEGER DEFAULT 0, minutos INTEGER DEFAULT 0)`);
   await db.execute(`CREATE TABLE IF NOT EXISTS sessoes (id INTEGER PRIMARY KEY, user_id TEXT, guild_id TEXT, inicio TEXT, fim TEXT)`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS contratos (id INTEGER PRIMARY KEY, user_id TEXT, email TEXT, data_criacao TEXT, data_assinatura TEXT, status TEXT DEFAULT 'pendente')`);
+  await db.execute(`CREATE TABLE IF NOT EXISTS contratos (id INTEGER PRIMARY KEY, user_id TEXT, email TEXT, texto_custom TEXT, data_criacao TEXT, data_assinatura TEXT, status TEXT DEFAULT 'pendente')`);
+  await db.execute(`CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT)`);
   await new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN).put(Routes.applicationCommands(client.user.id), { body: commands });
   console.log(`Online: ${client.user.tag}`);
 });
@@ -164,7 +184,7 @@ client.on('interactionCreate', async i => {
       const alvo = i.options.getUser('usuario');
       const h = i.options.getInteger('horas');
       const m = i.options.getInteger('minutos');
-      await db.execute({ sql: `INSERT INTO pontos (user_id, horas, minutos) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET horas=?, minutos=?`, args: [alvo.id, h, m, h, m] });
+      await db.execute({ sql: `INSERT INTO pontos (user_id, horas, minutos) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET horas=?, minutos=?`, args: [alvo.id, h, m] });
       return i.editReply(`✅ Horas de ${alvo} ajustadas pra **${h}h e ${m}min**.`);
     }
 
@@ -173,14 +193,15 @@ client.on('interactionCreate', async i => {
 
       const alvo = i.options.getUser('usuario');
       const email = i.options.getString('email');
+      const textoCustom = i.options.getString('texto');
       const contratoId = Date.now();
 
       await db.execute({
-        sql: 'INSERT INTO contratos (id, user_id, email, data_criacao) VALUES (?,?,?,?)',
-        args: [contratoId, alvo.id, email, new Date().toISOString()]
+        sql: 'INSERT INTO contratos (id, user_id, email, texto_custom, data_criacao) VALUES (?,?,?,?,?)',
+        args: [contratoId, alvo.id, email, textoCustom, new Date().toISOString()]
       });
 
-      return i.editReply(`✅ Contrato #${contratoId} criado pra ${alvo}.\nEmail: ${email}\n\nUse \`/enviarcontrato id:${contratoId}\` pra mandar por DM ou \`/assinar\` pra assinar direto.`);
+      return i.editReply(`✅ Contrato #${contratoId} criado pra ${alvo}.\n${textoCustom? 'Texto custom salvo.' : 'Usando modelo padrão.'}\n\nUse \`/enviarcontrato id:${contratoId}\` pra mandar.`);
     }
 
     if (i.commandName === 'assinar') {
@@ -197,9 +218,12 @@ client.on('interactionCreate', async i => {
         args: [new Date().toISOString(), c.id]
       });
 
-      client.users.fetch(ID_DONO).then(dono => {
-        dono.send(`📄 **CONTRATO ASSINADO**\n\nID: ${c.id}\nUsuário: ${i.user.tag}\nEmail: ${c.email}\nData: ${new Date().toLocaleString('pt-BR')}`).catch(()=>{});
-      }).catch(()=>{});
+      try {
+        const dono = await client.users.fetch(ID_DONO);
+        await dono.send(`📄 **CONTRATO ASSINADO**\n\nID: ${c.id}\nUsuário: ${i.user.tag}\nEmail: ${c.email}\nData: ${new Date().toLocaleString('pt-BR')}`);
+      } catch (dmError) {
+        console.log('Não consegui mandar DM pro dono:', dmError.message);
+      }
 
       return i.editReply(`✅ Contrato #${c.id} assinado com sucesso em ${new Date().toLocaleString('pt-BR')}!`);
     }
@@ -208,6 +232,7 @@ client.on('interactionCreate', async i => {
       if (i.user.id!== ID_DONO) return i.editReply('❌ Só o dono pode enviar contratos.');
 
       const id = i.options.getInteger('id');
+      const textoOverride = i.options.getString('texto');
       const contrato = await db.execute({ sql: 'SELECT * FROM contratos WHERE id=?', args: [id] });
       if (!contrato.rows.length) return i.editReply('❌ Contrato não encontrado.');
 
@@ -215,14 +240,40 @@ client.on('interactionCreate', async i => {
       const alvo = await client.users.fetch(c.user_id).catch(() => null);
       if (!alvo) return i.editReply('❌ Usuário do contrato não encontrado.');
 
-      const htmlContrato = `📄 **CONTRATO DE PRESTAÇÃO DE SERVIÇO**\n\n**Contratado:** ${alvo.username}\n**ID Discord:** ${alvo.id}\n**Email:** ${c.email}\n**Data:** ${new Date(c.data_criacao).toLocaleDateString('pt-BR')}\n**ID Contrato:** ${c.id}\n**Status:** ${c.status}\n\n1. O contratado se compromete a cumprir as atividades designadas pela liderança.\n2. O pagamento será realizado mediante cumprimento de metas.\n3. Este contrato tem validade de 30 dias.\n\n**Para confirmar a assinatura, entre no servidor e use o comando /assinar**`;
+      let textoBase = textoOverride || c.texto_custom || await getTextoContrato();
+      const textoFinal = aplicarVariaveis(
+        textoBase,
+        alvo.username,
+        alvo.id,
+        c.email,
+        new Date(c.data_criacao).toLocaleDateString('pt-BR')
+      );
 
       try {
-        await alvo.send(htmlContrato);
+        await alvo.send(textoFinal);
         return i.editReply(`✅ Contrato #${id} enviado por DM pra ${alvo.tag}`);
       } catch {
         return i.editReply(`❌ Não consegui enviar DM pra ${alvo.tag}. Ele pode estar com DM fechada.`);
       }
+    }
+
+    if (i.commandName === 'editartextocontrato') {
+      if (i.user.id!== ID_DONO) return i.editReply('❌ Só o dono pode editar o modelo.');
+
+      const novoTexto = i.options.getString('texto');
+      await db.execute({
+        sql: `INSERT INTO config (chave, valor) VALUES ('modelo_contrato',?) ON CONFLICT(chave) DO UPDATE SET valor=?`,
+        args: [novoTexto, novoTexto]
+      });
+
+      return i.editReply(`✅ Modelo padrão atualizado!\n\n**Prévia:**\n${novoTexto.substring(0, 500)}...`);
+    }
+
+    if (i.commandName === 'vertextocontrato') {
+      if (i.user.id!== ID_DONO) return i.editReply('❌ Só o dono pode ver o modelo.');
+
+      const modelo = await getTextoContrato();
+      return i.editReply(`**Modelo padrão atual:**\n\n${modelo}`);
     }
 
     if (i.commandName === 'relatoriocontratos') {
