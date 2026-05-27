@@ -20,7 +20,6 @@ const db = createClient({
 
 const ID_DONO = '1476727569268084858';
 
-// Config do Gmail
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -45,13 +44,13 @@ const commands = [
 
   new SlashCommandBuilder()
 .setName('ajustar')
-.setDescription('Soma ou subtrai horas de um usuário')
+.setDescription('Soma ou subtrai horas de um usuário - Só dono')
 .addUserOption(option => option.setName('usuario').setDescription('Usuário').setRequired(true))
 .addStringOption(option =>
   option.setName('tipo')
-   .setDescription('Somar ou subtrair horas')
-   .setRequired(true)
-   .addChoices(
+.setDescription('Somar ou subtrair horas')
+.setRequired(true)
+.addChoices(
       { name: 'Somar', value: 'somar' },
       { name: 'Subtrair', value: 'subtrair' }
     )
@@ -61,14 +60,14 @@ const commands = [
 
   new SlashCommandBuilder()
 .setName('criarcontrato')
-.setDescription('Cria um contrato e envia por email + DM')
+.setDescription('Cria um contrato e envia por email + DM - Só dono')
 .addUserOption(option => option.setName('usuario').setDescription('Usuário').setRequired(true))
 .addStringOption(option => option.setName('email').setDescription('Email').setRequired(true))
 .addStringOption(option => option.setName('texto').setDescription('Texto customizado do contrato').setRequired(false)),
 
   new SlashCommandBuilder()
 .setName('enviarcontrato')
-.setDescription('Reenvia o contrato por email + DM')
+.setDescription('Reenvia o contrato por email + DM - Só dono')
 .addUserOption(option => option.setName('usuario').setDescription('Usuário do contrato').setRequired(true)),
 
   new SlashCommandBuilder()
@@ -98,6 +97,12 @@ client.once('ready', async () => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT,
       email TEXT,
+      texto_custom TEXT,
+      pendente INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'ativo',
+      valor TEXT,
+      assinado INTEGER DEFAULT 0,
+      data_assinatura DATETIME,
       data_criacao DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -115,27 +120,14 @@ client.once('ready', async () => {
     )
   `);
 
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS horas_usuario (
+      user_id TEXT PRIMARY KEY,
+      horas REAL DEFAULT 0
+    )
+  `);
+
   await db.execute(`CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT)`);
-
-  const colunas = [
-    { nome: 'texto_custom', tipo: 'TEXT' },
-    { nome: 'pendente', tipo: 'INTEGER DEFAULT 0' },
-    { nome: 'status', tipo: 'TEXT DEFAULT "ativo"' },
-    { nome: 'valor', tipo: 'TEXT' },
-    { nome: 'data', tipo: 'TEXT' },
-    { nome: 'horas', tipo: 'INTEGER DEFAULT 0' },
-    { nome: 'assinado', tipo: 'INTEGER DEFAULT 0' },
-    { nome: 'data_assinatura', tipo: 'DATETIME' }
-  ];
-
-  for (const col of colunas) {
-    try {
-      await db.execute(`ALTER TABLE contratos ADD COLUMN ${col.nome} ${col.tipo}`);
-      console.log(`Coluna ${col.nome} adicionada`);
-    } catch (err) {
-      console.log(`Coluna ${col.nome} já existe`);
-    }
-  }
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
@@ -191,29 +183,30 @@ client.on('interactionCreate', async interaction => {
       const minutos = Math.floor((totalSegundos % 3600) / 60);
 
       const horasFloat = parseFloat((totalSegundos / 3600).toFixed(2));
+
       await db.execute({
-        sql: `UPDATE contratos SET horas = COALESCE(horas, 0) +? WHERE user_id =?`,
-        args: [horasFloat, userId]
+        sql: `INSERT INTO horas_usuario (user_id, horas) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET horas = horas +?`,
+        args: [userId, horasFloat, horasFloat]
       });
 
-      await interaction.reply(`Expediente encerrado. Total trabalhado: ${horas}h ${minutos}min. Salvei ${horasFloat}h no teu contrato.`);
+      await interaction.reply(`Expediente encerrado. Total trabalhado: ${horas}h ${minutos}min. Salvei ${horasFloat}h.`);
     }
 
     if (interaction.commandName === 'horas') {
       const user = interaction.options.getUser('usuario') || interaction.user;
-      const contrato = await db.execute({ sql: `SELECT horas FROM contratos WHERE user_id =?`, args: [user.id] });
-      const horasContrato = contrato.rows[0]?.horas || 0;
-      await interaction.reply(`${user} tem ${horasContrato}h salvas no contrato.`);
+      const result = await db.execute({ sql: `SELECT horas FROM horas_usuario WHERE user_id =?`, args: [user.id] });
+      const horas = result.rows[0]?.horas || 0;
+      await interaction.reply(`${user} tem ${horas}h registradas.`);
     }
 
     if (interaction.commandName === 'ranking') {
-      const contratos = await db.execute({ sql: `SELECT user_id, horas FROM contratos WHERE horas > 0 ORDER BY horas DESC LIMIT 10` });
+      const result = await db.execute({ sql: `SELECT user_id, horas FROM horas_usuario WHERE horas > 0 ORDER BY horas DESC LIMIT 10` });
 
-      if (contratos.rows.length === 0) return interaction.reply('Ninguém tem horas salvas ainda.');
+      if (result.rows.length === 0) return interaction.reply('Ninguém tem horas registradas ainda.');
 
-      let msg = '**🏆 Ranking de Horas Salvas:**\n';
-      for (let i = 0; i < contratos.rows.length; i++) {
-        const c = contratos.rows[i];
+      let msg = '**🏆 Ranking de Horas:**\n';
+      for (let i = 0; i < result.rows.length; i++) {
+        const c = result.rows[i];
         const user = await client.users.fetch(c.user_id).catch(() => null);
         msg += `${i + 1}. ${user? user.username : 'Desconhecido'} - ${c.horas}h\n`;
       }
@@ -222,6 +215,10 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.commandName === 'ajustar') {
+      if (interaction.user.id!== ID_DONO) {
+        return interaction.reply({ content: 'Só quem crê pode ajustar horas 🙏', ephemeral: true });
+      }
+
       const user = interaction.options.getUser('usuario');
       const tipo = interaction.options.getString('tipo');
       const horas = interaction.options.getInteger('horas');
@@ -229,25 +226,26 @@ client.on('interactionCreate', async interaction => {
 
       const horasParaAjustar = horas + (minutos / 60);
 
-      const contrato = await db.execute({
-        sql: `SELECT horas FROM contratos WHERE user_id =?`,
+      await db.execute({
+        sql: `INSERT OR IGNORE INTO horas_usuario (user_id, horas) VALUES (?,0)`,
         args: [user.id]
       });
 
-      if (contrato.rows.length === 0) {
-        return interaction.reply({ content: `${user} não tem contrato criado ainda.`, ephemeral: true });
-      }
+      const result = await db.execute({
+        sql: `SELECT horas FROM horas_usuario WHERE user_id =?`,
+        args: [user.id]
+      });
 
-      const horasAtuais = contrato.rows[0]?.horas || 0;
+      const horasAtuais = result.rows[0]?.horas || 0;
       let horasFinais = tipo === 'somar'
-       ? horasAtuais + horasParaAjustar
+  ? horasAtuais + horasParaAjustar
         : horasAtuais - horasParaAjustar;
 
       if (horasFinais < 0) horasFinais = 0;
       horasFinais = parseFloat(horasFinais.toFixed(2));
 
       await db.execute({
-        sql: `UPDATE contratos SET horas =? WHERE user_id =?`,
+        sql: `UPDATE horas_usuario SET horas =? WHERE user_id =?`,
         args: [horasFinais, user.id]
       });
 
@@ -260,14 +258,18 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.commandName === 'criarcontrato') {
+      if (interaction.user.id!== ID_DONO) {
+        return interaction.reply({ content: 'Só quem crê pode criar contrato 🙏', ephemeral: true });
+      }
+
       await interaction.deferReply();
       const user = interaction.options.getUser('usuario');
       const email = interaction.options.getString('email');
       const texto = interaction.options.getString('texto');
 
       await db.execute({
-        sql: `INSERT INTO contratos (user_id, email, texto_custom, pendente, status, horas, assinado) VALUES (?,?,?,?,?,?,?)`,
-        args: [user.id, email, texto, 0, 'ativo', 0, 0]
+        sql: `INSERT INTO contratos (user_id, email, texto_custom, pendente, status, assinado) VALUES (?,?,?,?,?,?)`,
+        args: [user.id, email, texto, 0, 'ativo', 0]
       });
 
       let textoFinal = texto;
@@ -304,6 +306,10 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.commandName === 'enviarcontrato') {
+      if (interaction.user.id!== ID_DONO) {
+        return interaction.reply({ content: 'Só quem crê pode reenviar contrato 🙏', ephemeral: true });
+      }
+
       await interaction.deferReply({ ephemeral: true });
       const user = interaction.options.getUser('usuario');
 
@@ -399,9 +405,9 @@ client.on('interactionCreate', async interaction => {
         return interaction.editReply('Nenhum contrato pra exportar.');
       }
 
-      let csv = 'ID,User ID,Email,Pendente,Status,Valor,Horas,Assinado,Data Assinatura,Data Criacao\n';
+      let csv = 'ID,User ID,Email,Pendente,Status,Valor,Assinado,Data Assinatura,Data Criacao\n';
       for (const c of contratos.rows) {
-        csv += `${c.id},"${c.user_id}","${c.email || ''}",${c.pendente || 0},"${c.status || ''}","${c.valor || ''}",${c.horas || 0},${c.assinado || 0},"${c.data_assinatura || ''}","${c.data_criacao}"\n`;
+        csv += `${c.id},"${c.user_id}","${c.email || ''}",${c.pendente || 0},"${c.status || ''}","${c.valor || ''}",${c.assinado || 0},"${c.data_assinatura || ''}","${c.data_criacao}"\n`;
       }
 
       const buffer = Buffer.from(csv, 'utf-8');
