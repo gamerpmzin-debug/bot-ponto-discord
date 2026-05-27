@@ -10,9 +10,9 @@ app.listen(process.env.PORT || 10000);
 
 const db = createClient({ url: process.env.TURSO_DATABASE_URL, authToken: process.env.TURSO_AUTH_TOKEN });
 const ID_CARGO_LIDER = '1476731803384545390';
-const ID_DONO = '1476727569268084858'; // Teu ID já tá aqui
+const ID_DONO = '1476727569268084858';
 
-const transporter = nodemailer.createTransporter({
+const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
 });
@@ -126,7 +126,7 @@ client.on('interactionCreate', async i => {
       const alvo = i.options.getUser('usuario');
       const h = i.options.getInteger('horas');
       const m = i.options.getInteger('minutos');
-      await db.execute({ sql: `INSERT INTO pontos (user_id, horas, minutos) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET horas=?, minutos=?`, args: [alvo.id, h, m] });
+      await db.execute({ sql: `INSERT INTO pontos (user_id, horas, minutos) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET horas=?, minutos=?`, args: [alvo.id, h, m, h, m] });
       return i.editReply(`✅ Horas de ${alvo} ajustadas pra **${h}h e ${m}min**.`);
     }
 
