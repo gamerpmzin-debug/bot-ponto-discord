@@ -1,6 +1,7 @@
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from 'discord.js';
 import { createClient } from '@libsql/client';
 import dotenv from 'dotenv';
+import http from 'http'; // Pra enganar o Render
 dotenv.config();
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -14,23 +15,23 @@ const ID_DONO = '1476727569268084858';
 
 const commands = [
   new SlashCommandBuilder()
-  .setName('ajustar')
-  .setDescription('Ajusta dados de um usuário')
-  .addUserOption(option => option.setName('usuario').setDescription('Usuário').setRequired(true))
-  .addStringOption(option => option.setName('campo').setDescription('Campo: pendente, status, valor').setRequired(true))
-  .addStringOption(option => option.setName('valor').setDescription('Novo valor').setRequired(true)),
+ .setName('ajustar')
+ .setDescription('Ajusta dados de um usuário')
+ .addUserOption(option => option.setName('usuario').setDescription('Usuário').setRequired(true))
+ .addStringOption(option => option.setName('campo').setDescription('Campo: pendente, status, valor').setRequired(true))
+ .addStringOption(option => option.setName('valor').setDescription('Novo valor').setRequired(true)),
 
   new SlashCommandBuilder()
-  .setName('criarcontrato')
-  .setDescription('Cria um contrato')
-  .addUserOption(option => option.setName('usuario').setDescription('Usuário').setRequired(true))
-  .addStringOption(option => option.setName('email').setDescription('Email').setRequired(true))
-  .addStringOption(option => option.setName('texto').setDescription('Texto customizado do contrato').setRequired(false)),
+ .setName('criarcontrato')
+ .setDescription('Cria um contrato')
+ .addUserOption(option => option.setName('usuario').setDescription('Usuário').setRequired(true))
+ .addStringOption(option => option.setName('email').setDescription('Email').setRequired(true))
+ .addStringOption(option => option.setName('texto').setDescription('Texto customizado do contrato').setRequired(false)),
 
   new SlashCommandBuilder()
-  .setName('editartextocontrato')
-  .setDescription('Edita o texto padrão dos contratos - Só dono')
-  .addStringOption(option => option.setName('texto').setDescription('Novo texto padrão').setRequired(true))
+ .setName('editartextocontrato')
+ .setDescription('Edita o texto padrão dos contratos - Só dono')
+ .addStringOption(option => option.setName('texto').setDescription('Novo texto padrão').setRequired(true))
 ].map(cmd => cmd.toJSON());
 
 client.once('ready', async () => {
@@ -130,3 +131,7 @@ client.on('interactionCreate', async interaction => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+
+// Dummy server pro Render parar de reclamar de porta
+const server = http.createServer((req, res) => res.end('Bot online'));
+server.listen(process.env.PORT || 3000);
